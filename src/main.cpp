@@ -55,7 +55,11 @@ int main()
     map_waypoints_dy.push_back(d_y);
   }
 
-  h.onMessage([&map_waypoints_x, &map_waypoints_y, &map_waypoints_s,
+  double ref_speed = 0.0; // m/s
+  // set target lane
+  double lane = 1.0; // 0, 1, 2
+
+  h.onMessage([&lane, &ref_speed, &map_waypoints_x, &map_waypoints_y, &map_waypoints_s,
                &map_waypoints_dx, &map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                                                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
@@ -98,6 +102,10 @@ int main()
           json msgJson;
 
           double Ts = 0.02; // SampleTime
+          double maxSpeed = 49.0/2.24;  // m/s
+          double accel = 15/3.6;   // m/s²  (kmt/s->m/s²)
+          double targetCarDist = 50; // m 
+
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
@@ -105,8 +113,7 @@ int main()
            * TODO: define a path made up of (x,y) points that the car will visit
            *   sequentially every .02 seconds
            */
-          // set target lane
-          double lane = 1.0; // 0, 1, 2
+          
 
           // Set car yaw to radians
           car_yaw = deg2rad(car_yaw);
@@ -118,6 +125,41 @@ int main()
           double ref_yaw = car_yaw;
           double last_ref_x;
           double last_ref_y;
+
+          bool blockingCar = false;  // Car blocking in lane
+
+
+          ///// Run sensor fusion checks
+          // Loop over other cars
+          for (int n=0; n<sensor_fusion.size(); n++)
+          {
+            //Get car data
+            double vx = sensor_fusion[n][3];
+            double vy = sensor_fusion[n][4];
+            double sf_car_s = sensor_fusion[n][5];
+            double sf_car_d = sensor_fusion[n][6];
+            double sf_car_Speed = sqrt(vx*vx + vy*vy);
+
+            cout << "Car, d-pos: " << sf_car_d << ", speed: " << sf_car_Speed << endl;
+
+            if ((GetLane(sf_car_d, 4.0) == lane) && CarTooClose(car_s, sf_car_s, targetCarDist))
+            {
+              if (blockingCar == false)
+                cout << "Blocking Car, lane: " << lane << ", d-pos: " << sf_car_d << ", speed: " << sf_car_Speed << endl;
+
+              blockingCar = true;
+              
+            }
+            // else blockingCar = false
+          }
+
+
+          // Accelerate decelerate
+          if (blockingCar && (ref_speed > 0.0))          
+            ref_speed -= accel * Ts * 5.0;  // 5.0 as Sample time seems to be slower than Ts
+          else if (ref_speed < maxSpeed)
+            ref_speed += accel * Ts * 5.0;  
+
 
           // Create next waypoint vectors
           vector<double> next_wp_x;
@@ -131,12 +173,17 @@ int main()
           }
           else // Use previous waypoints as starting points
           {
-            ref_x = previous_path_x[prev_size - 1];
+            ref_x = previous_path_x[prev_size - 1]; 
             ref_y = previous_path_y[prev_size - 1];
 
             last_ref_x = previous_path_x[prev_size - 2];
             last_ref_y = previous_path_y[prev_size - 2];
+
+            if (ref_x <= last_ref_x) // Make sure that ref_x is greater than last_ref_x
+              ref_x = last_ref_x + 0.1;
+
             ref_yaw = atan2(ref_y-last_ref_y, ref_x-last_ref_x);
+            cout << "Use prev. way points" << endl;
           }
           next_wp_x.push_back(last_ref_x);
           next_wp_x.push_back(ref_x);
@@ -181,17 +228,20 @@ int main()
 
           // Use spline to calculate new reference points at a target speed
           int N_newpoints = 50;
-          double ref_speed = 22.0; // m/s
+          
           double target_x = 30.0;
           double target_y = spl(target_x);
           double target_dist = sqrt(target_x * target_x + target_y * target_y);
           double x_last = 0.0;
 
-          for (int i = 0; i < N_newpoints - prev_size; ++i)
+          for (int i = 0; i < (N_newpoints - prev_size); ++i)
           {
+            double ref_spd = ref_speed;
+            if (ref_spd < 2.0)  // Set minimum speed to 2m/s
+               ref_spd = 2.0;
             double N = target_dist / (Ts * ref_speed);
-            double x_point_cf = x_last + target_x / N;
-            double y_point_cf = spl(x_point_cf);
+            double x_point_cf = x_last + target_x / N;  // car frame
+            double y_point_cf = spl(x_point_cf);        // car frame
 
             x_last = x_point_cf;
 
@@ -200,8 +250,8 @@ int main()
             double y_point = ref_y + x_point_cf * sin(ref_yaw) + y_point_cf * cos(ref_yaw);
 
             // Add points to next coordinates list
-            cout << "New x_point: " << x_point << endl;
-            cout << "New y_point: " << y_point << endl;
+            //cout << "New x_point: " << x_point << endl;
+            //cout << "New y_point: " << y_point << endl;
             next_x_vals.push_back(x_point);
             next_y_vals.push_back(y_point);
           }

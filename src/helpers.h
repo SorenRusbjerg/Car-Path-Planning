@@ -154,4 +154,29 @@ vector<double> getXY(double s, double d, const vector<double> &maps_s,
   return {x,y};
 }
 
+// Get car lane from frenet d
+int GetLane(double d, double laneWidth)
+{
+  int lane = 0;
+  if (0 <= d && d < laneWidth)
+    lane = 0;
+  else if (laneWidth <= d && d < 2*laneWidth)
+    lane = 1;
+  else if (2*laneWidth <= d && d < 3*laneWidth)
+    lane = 2;
+
+  return lane;
+}
+
+// Get info if other car is too close
+bool CarTooClose(double car_s, double sf_car_s, double dist)
+{
+  double diff = sf_car_s - car_s;
+  if (diff > 0.0 and diff < dist)
+    return true;
+  else
+    return false;
+
+}
+
 #endif  // HELPERS_H
