@@ -9,6 +9,14 @@
 using std::string;
 using std::vector;
 
+struct S_sf_Car {
+  double lane;
+  double lane_diff;
+  double s_diff;
+  double speed;
+};
+
+
 // Checks if the SocketIO event has JSON data.
 // If there is data the JSON object in string format will be returned,
 //   else the empty string "" will be returned.
@@ -75,6 +83,7 @@ int NextWaypoint(double x, double y, double theta, const vector<double> &maps_x,
     ++closestWaypoint;
     if (closestWaypoint == maps_x.size()) {
       closestWaypoint = 0;
+      std::cout << "closestWaypoint = 0" << std::endl;
     }
   }
 
@@ -177,6 +186,101 @@ bool CarTooClose(double car_s, double sf_car_s, double dist)
   else
     return false;
 
+}
+
+// Get cost for all lanes
+vector<double> GetLaneCost(const vector<S_sf_Car> &sf_cars)
+{
+  double max_dist_pos = 100.0;
+  double max_dist_neg = -20.0;
+  double target_speed = 50.0/2.24;
+  double cost_dist = 0.5; // per meter
+  double cost_speed = 3.0; // 
+  double cost_lanediff = 20.0;
+
+  vector<double> laneCost = {0,0,0};
+
+  // Loop over all cars in lane and add lane cost
+  for (S_sf_Car car : sf_cars)
+  {
+    // within short distance calculate cost
+    if ((car.s_diff < max_dist_pos) and (car.s_diff > max_dist_neg))
+    {
+      int lane = int(car.lane); 
+      // Calculate lane speed cost
+      laneCost[lane] += cost_speed*(target_speed - car.speed); 
+
+      if (car.s_diff > 0) // car ahead    
+        laneCost[lane] += cost_dist * pow(max_dist_pos - car.s_diff,1.5); 
+      else // car behind
+      {
+        laneCost[lane] += 5.0*cost_dist * pow(car.s_diff - max_dist_neg,1.5); 
+      }
+
+      laneCost[lane] += cost_lanediff * car.lane_diff;       
+    }
+  }
+  return laneCost;
+}
+
+// Get lane speed for slowest car in lane within immidiate distance 
+double GetLaneSpeed(const vector<S_sf_Car> &sf_cars, int lane)
+{
+  double max_dist_pos = 30.0;
+  double max_dist_neg = 0.0;
+  double target_speed = 50.0/2.24;
+  double laneSpeed = target_speed;
+
+  // Loop over all cars in lane
+  for (S_sf_Car car : sf_cars)
+  {
+    // within short distance calculate speed
+    if ((car.s_diff < max_dist_pos) and (car.s_diff > max_dist_neg) and car.lane == lane)
+    {
+      // Get minimum lane speed
+      if (car.speed < laneSpeed)
+      {
+        laneSpeed = car.speed;
+      } 
+    }
+  }
+
+  return laneSpeed;
+
+}
+
+// Calculate d-coordinates from lanes
+vector<double> Get_d_ref(const int currentLane, const int newLane)
+{
+  double current_d = 2.0 + 4.0*currentLane;
+  double new_d = 2.0 + 4.0*newLane;
+
+  vector<double> d_ref(3);
+  d_ref[0] = current_d + (new_d-current_d);
+  d_ref[1] = current_d + (new_d-current_d);
+  d_ref[2] = current_d + (new_d-current_d);
+  return d_ref;
+}
+
+
+// Calculate s-coordinates from lanes
+vector<double> Get_s_ref_turn()
+{
+  vector<double> s_ref(3);
+  s_ref[0] = 80.0;
+  s_ref[1] = 110.0;
+  s_ref[2] = 120.0;
+  return s_ref;
+}
+
+// Calculate s-coordinates from lanes
+vector<double> Get_s_ref_straight()
+{
+  vector<double> s_ref(3);
+  s_ref[0] = 40.0;
+  s_ref[1] = 80.0;
+  s_ref[2] = 120.0;
+  return s_ref;
 }
 
 #endif  // HELPERS_H

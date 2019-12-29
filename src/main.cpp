@@ -16,6 +16,15 @@ using std::endl;
 using std::string;
 using std::vector;
 
+enum class E_STATE {GO_STRAIGHT, PREPARE_TURN, TURN} state = E_STATE::GO_STRAIGHT;
+  
+  const double Ts = 0.02; // SampleTime
+  const double maxSpeed = 49.0/2.24;  // m/s
+  const double targetSpeed = 45/2.24;  // m/s
+  const double MaxAccel = 15/3.6;   // m/s²  (kmt/s->m/s²)
+  const double targetCarDist = 50; // m 
+  
+
 int main()
 {
   uWS::Hub h;
@@ -55,11 +64,12 @@ int main()
     map_waypoints_dy.push_back(d_y);
   }
 
+
   double ref_speed = 0.0; // m/s
   // set target lane
-  double lane = 1.0; // 0, 1, 2
+  double new_lane = 1.0; // 0, 1, 2
 
-  h.onMessage([&lane, &ref_speed, &map_waypoints_x, &map_waypoints_y, &map_waypoints_s,
+  h.onMessage([&new_lane, &ref_speed, &map_waypoints_x, &map_waypoints_y, &map_waypoints_s,
                &map_waypoints_dx, &map_waypoints_dy](uWS::WebSocket<uWS::SERVER> ws, char *data, size_t length,
                                                      uWS::OpCode opCode) {
     // "42" at the start of the message means there's a websocket message event.
@@ -100,12 +110,13 @@ int main()
           auto sensor_fusion = j[1]["sensor_fusion"];
 
           json msgJson;
-
+/*
           double Ts = 0.02; // SampleTime
           double maxSpeed = 49.0/2.24;  // m/s
+          double targetSpeed = 45/2.24;  // m/s
           double accel = 15/3.6;   // m/s²  (kmt/s->m/s²)
           double targetCarDist = 50; // m 
-
+*/
           vector<double> next_x_vals;
           vector<double> next_y_vals;
 
@@ -125,12 +136,14 @@ int main()
           double ref_yaw = car_yaw;
           double last_ref_x;
           double last_ref_y;
-
+          vector<S_sf_Car> sf_cars;
           bool blockingCar = false;  // Car blocking in lane
 
 
           ///// Run sensor fusion checks
-          // Loop over other cars
+          // Loop over other cars and calculate s-position, lane and speed 
+          double dest_lane = GetLane(end_path_d, 4.0);  // Gets car's destination lane
+
           for (int n=0; n<sensor_fusion.size(); n++)
           {
             //Get car data
@@ -138,37 +151,125 @@ int main()
             double vy = sensor_fusion[n][4];
             double sf_car_s = sensor_fusion[n][5];
             double sf_car_d = sensor_fusion[n][6];
-            double sf_car_Speed = sqrt(vx*vx + vy*vy);
+            S_sf_Car sf_car;
+            sf_car.speed = sqrt(vx*vx + vy*vy);
 
-            cout << "Car, d-pos: " << sf_car_d << ", speed: " << sf_car_Speed << endl;
 
-            if ((GetLane(sf_car_d, 4.0) == lane) && CarTooClose(car_s, sf_car_s, targetCarDist))
-            {
-              if (blockingCar == false)
-                cout << "Blocking Car, lane: " << lane << ", d-pos: " << sf_car_d << ", speed: " << sf_car_Speed << endl;
+            // Project other car future position when last spline is executed
+            sf_car_s += sf_car.speed*prev_size*Ts;     
+            // cout << "Car, d-pos: " << sf_car_d << ", speed: " << sf_car.speed << endl;
 
-              blockingCar = true;
-              
-            }
-            // else blockingCar = false
+            // Get car lane 
+            sf_car.lane = GetLane(sf_car_d, 4.0);
+            sf_car.lane_diff = abs(sf_car.lane - dest_lane);
+
+            // Put car data into vector
+            sf_car.s_diff = sf_car_s - end_path_s;
+
+            sf_cars.push_back(sf_car);
           }
 
 
-          // Accelerate decelerate
-          if (blockingCar && (ref_speed > 0.0))          
-            ref_speed -= accel * Ts * 5.0;  // 5.0 as Sample time seems to be slower than Ts
-          else if (ref_speed < maxSpeed)
+          //// Calculate lane costs
+          vector<double> laneCosts = GetLaneCost(sf_cars); 
+          // Print lane costs                   
+          cout << "Lane costs";
+          for (int l=0; l<3; l++)
+            cout << ": Lane " << l << "=" << laneCosts[l];
+          cout << endl;
+
+          //// Run FSM
+          // loop over new lanes and check which have lowest cost 
+          double best_cost = 1e6;
+          int best_lane = dest_lane; // current lane
+          for (int lane=0; lane<3; lane++)
+          {
+            // Only check lanes next to current lane
+            if (abs(dest_lane - lane)<=1.01)
+            {
+              //cout << "Testlane " << lane << ", dest_lane " << dest_lane << endl;
+              if (laneCosts[lane]<best_cost)
+              {
+                best_cost = laneCosts[lane];
+                best_lane = lane;
+              }              
+            }
+          }
+          new_lane = best_lane;
+
+          // Run FSM
+          vector<double> d_ref(3);
+          vector<double> s_ref(3);
+          double new_speed;
+          double accel = 0.0;
+          switch(state) 
+          {
+            case E_STATE::GO_STRAIGHT:
+              d_ref = Get_d_ref(dest_lane, dest_lane);
+              s_ref = Get_s_ref_straight();
+                        // get new speed reference
+              new_speed = GetLaneSpeed(sf_cars, new_lane);
+              accel = MaxAccel;
+              if (new_lane != dest_lane)
+              {
+                state = E_STATE::PREPARE_TURN;                
+                cout << "State= PREPARE_TURN" << endl;
+              }
+
+            break;
+            case E_STATE::PREPARE_TURN:  // Adjust speed before turn
+            d_ref = Get_d_ref(dest_lane, dest_lane);
+            s_ref = Get_s_ref_straight();
+            accel = MaxAccel;            
+            if (new_speed > (maxSpeed-5.0))
+                new_speed = maxSpeed - 5.0;
+            else
+            {
+              state = E_STATE::TURN;                
+              cout << "State= TURN" << endl;
+            }          
+
+            break;
+            case E_STATE::TURN:
+              d_ref = Get_d_ref(new_lane, new_lane);
+              s_ref = Get_s_ref_turn();              
+              new_speed = GetLaneSpeed(sf_cars, new_lane);
+              accel = 0.0;
+              if (new_speed > (maxSpeed-3.0))
+                new_speed = maxSpeed - 3.0;
+
+              if (new_lane == dest_lane)
+              {
+                state = E_STATE::GO_STRAIGHT;
+                cout << "State= GO_STRAIGHT" << endl;
+              }
+            break;
+            default:
+            break;
+
+          }
+          
+          cout << "d_ref: " << d_ref[0] << ", " << d_ref[1] << ", " << d_ref[2]  << endl;
+          cout << "NewLane " << new_lane << ", New speed: " << new_speed << endl;
+
+          // Accelerate / decelerate
+          if ((ref_speed+0.5) > new_speed)
+          {   
+            ref_speed -= accel * Ts * 5.0;   //accel * Ts * 5.0;  // 5.0 as Sample time seems to be slower than Ts
+          }
+          else if (ref_speed < new_speed)
             ref_speed += accel * Ts * 5.0;  
 
 
-          // Create next waypoint vectors
+          //// Create next waypoint vectors
           vector<double> next_wp_x;
           vector<double> next_wp_y;
           // Create 2 starting points for car in xy-coordinates if previous_path is empty
-          if (previous_path_x.size() < 2)
+          if (prev_size < 2)
           {
             last_ref_x = car_x - cos(car_yaw);
             last_ref_y = car_y - sin(car_yaw);
+            ref_yaw = car_yaw;
             cout << "Creating new points" << endl;
           }
           else // Use previous waypoints as starting points
@@ -178,11 +279,7 @@ int main()
 
             last_ref_x = previous_path_x[prev_size - 2];
             last_ref_y = previous_path_y[prev_size - 2];
-
-            if (ref_x <= last_ref_x) // Make sure that ref_x is greater than last_ref_x
-              ref_x = last_ref_x + 0.1;
-
-            ref_yaw = atan2(ref_y-last_ref_y, ref_x-last_ref_x);
+           
             cout << "Use prev. way points" << endl;
           }
           next_wp_x.push_back(last_ref_x);
@@ -191,10 +288,12 @@ int main()
           next_wp_y.push_back(last_ref_y);
           next_wp_y.push_back(ref_y);
 
-          // Create spline from Frenet waypoints along a given path
-          vector<double> next_wp0 = getXY(car_s + 40.0, (2 + 4 * lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp1 = getXY(car_s + 80.0, (2 + 4 * lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
-          vector<double> next_wp2 = getXY(car_s + 120.0, (2 + 4 * lane), map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          //cout << "ref_yaw: " << 180.0*ref_yaw/M_PI << endl;
+
+          // Create spline from Frenet waypoints along a given path          
+          vector<double> next_wp0 = getXY(car_s + s_ref[0], d_ref[0], map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp1 = getXY(car_s + s_ref[1], d_ref[1], map_waypoints_s, map_waypoints_x, map_waypoints_y);
+          vector<double> next_wp2 = getXY(car_s + s_ref[2], d_ref[2], map_waypoints_s, map_waypoints_x, map_waypoints_y);
           next_wp_x.push_back(next_wp0[0]);
           next_wp_x.push_back(next_wp1[0]);
           next_wp_x.push_back(next_wp2[0]);
@@ -210,7 +309,7 @@ int main()
             double dy = next_wp_y[i] - ref_y;            
             next_wp_x[i] = dx * cos(-ref_yaw) - dy * sin(-ref_yaw);
             next_wp_y[i] = dx * sin(-ref_yaw) + dy * cos(-ref_yaw);
-            cout << "New wp_x: " << next_wp_x[i] << endl;
+            //cout << "New wp_x: " << next_wp_x[i] << endl;
           }
 
           // Make spline
@@ -237,9 +336,9 @@ int main()
           for (int i = 0; i < (N_newpoints - prev_size); ++i)
           {
             double ref_spd = ref_speed;
-            if (ref_spd < 2.0)  // Set minimum speed to 2m/s
-               ref_spd = 2.0;
-            double N = target_dist / (Ts * ref_speed);
+            if (ref_spd < 0.1)  // Set minimum speed (avoid divide by zero)
+               ref_spd = 0.1;
+            double N = target_dist / (Ts * ref_spd);
             double x_point_cf = x_last + target_x / N;  // car frame
             double y_point_cf = spl(x_point_cf);        // car frame
 
@@ -249,11 +348,11 @@ int main()
             double x_point = ref_x + x_point_cf * cos(ref_yaw) - y_point_cf * sin(ref_yaw);
             double y_point = ref_y + x_point_cf * sin(ref_yaw) + y_point_cf * cos(ref_yaw);
 
-            // Add points to next coordinates list
-            //cout << "New x_point: " << x_point << endl;
-            //cout << "New y_point: " << y_point << endl;
+            // Add points to next coordinates list  
             next_x_vals.push_back(x_point);
             next_y_vals.push_back(y_point);
+            //cout << "New x_point: " << x_point << endl;
+            //cout << "New y_point: " << y_point << endl;
           }
 
           // Insert into Jason package

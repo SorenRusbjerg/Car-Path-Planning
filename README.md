@@ -143,3 +143,55 @@ still be compilable with cmake and make./
 ## How to write a README
 A well written README file can enhance your project and portfolio.  Develop your abilities to create professional README files by completing [this free course](https://www.udacity.com/course/writing-readmes--ud777).
 
+
+# Project writeup
+In this chapter a walk through of the code is included.
+The code itself also is commented.
+
+## Sensor fusion data
+The sensor fusion data given of other cars is used to create a vector of sensor fusion car structs 'sf_cars'. These car structs contain car lane, lane distance to own car lane, speed, and distance to own car in s-coordinates. Before 's' is calculated, it is projected forward to end of current driving trajectory using its speed and sample time and samples left in current trajectory. 
+This data is used by the cost function.
+
+
+## Cost function
+A cost functio is implemented to find the optimal driving lane for speedy travel. The cost function calculates the cost of each lane using weights for distance, speed of other cars as well as a cost for lane change.
+The cost function is implemented in:
+```c++
+ vector<double> GetLaneCost(const vector<S_sf_Car> &sf_cars)
+``` 
+
+
+## Finite State Machine description
+
+The state machine is used to decide lane changes based on the best lane found by the cost function.
+The FSM includes three states:
+* **GO_STRAIGHT**: keeps lane, and runs at lane speed (nearest car speed in front)
+
+* **PREPARE_TURN**: Keeps lane, but reduces speed a little if car is at maximum speed, to avoid high jerk when changing lanes.
+This state is initiated when optimal lane is left or right from current lane.
+
+* **TURN**: Change lane to optimal lane. Keep speed while turning, to avoid extra acceleration from new lane speed. When turn is finished, go back to *GO_STRAIGHT* state.
+
+The state machine is found in *main.cpp l.181*.
+
+## Spline generation
+For running the car smoothly during turns, a spline function is used to create a xy-trajectory for the car (found in *spline.h*).
+The spline function interpolates coordinates created in ds-coordinates and transformed to xy-coordinates in a local car frame. This  makes it easier to use the spline function, as the x-direction is in the car driving direction.
+
+The spline is used to create many waypoints in with a distance between corresponding to the reference speed (using a sample time of 0.02 seconds) which is put into a waypoint vector of length 50. 
+
+Before the waypoints from the spline or put into the waypoint vector they are transformed back into map xy-coordinates again.
+
+This is done in *main.cpp l.264 to l.356*
+
+## Car speed and acceleration
+The car speed is found from the given lane speed. The acceleration is made smooth by setting a maximum allowed acceleration when changing speed reference. See *main.cpp l. 255*. The acceleration and jerk is also minimized by using smooth splines when changing lanes.
+
+## Helper functions
+Different helper functions are included in the bottom of *helpers.h*, from *l.166*.
+
+## Performance
+The car have succeded in driving 30miles without any errors. 
+Sometimes however it cuts in front of other cars hitting them in the process, which might be avoided tuning the cost function further, or making more shift criterias into the FSM.
+
+![alt text](Screenshot.png "Car driving straight")
